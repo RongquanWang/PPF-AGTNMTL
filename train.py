@@ -35,12 +35,14 @@ def lossFunc(p, y, *args):
     return logcosh(p, y) + bell_loss(p, y)
 
 
-def adjust_learning_rate(optimizer, epoch, lr, lr_type, lr_steps):
+def adjust_learning_rate(optimizer, epoch, lr, lr_type, lr_steps=None):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     lr = lr
-    weight_decay = 1e-4
-    epochs = 100
+    weight_decay = wd
+
     if lr_type == 'step':
+        if lr_steps is None:
+            lr_steps = [50, 80]
         decay = 0.1 ** (sum(epoch >= np.array(lr_steps)))
         lr = lr * decay
         decay = weight_decay
@@ -129,10 +131,9 @@ class SELF_MM(nn.Module):
 
         self.label_map = {
             'm': torch.zeros((train_samples, 5), requires_grad=False).to(device),
-            'cc1': torch.zeros((train_samples, 5), requires_grad=False).to(device),
-            'clip_clip': torch.zeros((train_samples, 5), requires_grad=False).to(device),
-            'clip_wav': torch.zeros((train_samples, 5), requires_grad=False).to(device),
-            'clip_t': torch.zeros((train_samples, 5), requires_grad=False).to(device),
+            'clip_clip': torch.zeros((train_samples, 5), requires_grad=False).to(device),  # Scene-descriptions association feature
+            'clip_wav': torch.zeros((train_samples, 5), requires_grad=False).to(device),  # Scene-audio association feature
+            'clip_t': torch.zeros((train_samples, 5), requires_grad=False).to(device),  # Text feature
         }
         self.name_map = {
             'M': 'm',
@@ -174,7 +175,7 @@ class SELF_MM(nn.Module):
         for epoch in range(self.epochs):
             start_time = datetime.now()
             model.train()
-            adjust_learning_rate(optimizer, epoch, self.lr, lr_type='cos', lr_steps=[50, 100])
+            adjust_learning_rate(optimizer, epoch, self.lr, lr_type='cos')
             for dl in train_dl:
                 target = dl[0].to(device)  # [b,5]
                 clip_v = dl[1].to(device)
@@ -228,7 +229,7 @@ class SELF_MM(nn.Module):
             \tTrain loss: {train_loss:.4f},  Acc: {train_acc:.4f}, PCC: {train_pcc:.4f}, CCC: {train_ccc:.4f}, R2: {train_R2:.4f}
             \tVal loss: {val_loss:.4f} | Acc: {acc:.4f} | PCC: {pcc:.4f} | CCC: {ccc:.4f} | R2: {R2:.4f}"""
             print(res)
-            if count == 20:
+            if count == earlystop:
                 break
             # if val_loss < 0.001:
             #     break
@@ -241,14 +242,14 @@ def main(save_path):
     train_samples = len(train_dataset)
 
     train_dl = data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, drop_last=False,
-                               pin_memory=True, num_workers=1)
-    val_dl = data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=16)
+                               pin_memory=True, num_workers=4)
+    val_dl = data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     model = MODEL(text_len=text_len)
 
-    self_mm = SELF_MM(train_samples=train_samples, device=device, lr=lr, wd=1e-4, epochs=300)
+    self_mm = SELF_MM(train_samples=train_samples, device=device, lr=lr, wd=wd, epochs=epochs)
     best_acc = self_mm.do_train(model, train_dl, val_dl, save_path)
     return best_acc
 
@@ -257,7 +258,7 @@ def test(save_path, mod='test'):
     test_dataset = DATASET(mod=mod)
 
     test_dl = data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, drop_last=False,
-                              pin_memory=True, num_workers=16)
+                              pin_memory=True, num_workers=4)
     model = MODEL(text_len=text_len)
     # nn.DataParallel(model, device_ids=[0]).cuda()
 
@@ -288,7 +289,9 @@ if __name__ == "__main__":
     device = torch.device(f'cuda:{ind % 4}')  # 4 gpu
     times = 3  # times of training
     lr = 1e-4
-
+    wd = 1e-4
+    earlystop = 30
+    epochs = 300
 
     if dataset_name == 'UDIVA':
         batch_size = 64
